@@ -1,142 +1,20 @@
 const { spawn } = require('child_process');
 const path = require('path');
+const crypto = require('crypto');
 
 /**
- * Simple PDF worker with basic process reuse
- * This keeps the process pooling concept but makes it much simpler
+ * Secure PDF worker with JSON communication
+ * Python input: {"html": "...", "css": "...", "request_id": "..."}
+ * Python output: {"success": true, "request_id": "...", "pdf_base64": "...", "size": 123}
  */
-
-// Simple process cache (not complex pooling)
-let cachedProcess = null;
-let processReady = false;
-let requestQueue = [];
 
 /**
- * Create a Python process for WeasyPrint
+ * Generate PDF using secure single-request process with request validation
  */
-function createPythonProcess() {
+async function generatePDFSecure(data) {
+    const requestId = crypto.randomUUID().substring(0, 8);
     const pythonPath = '/opt/weasyprint/bin/python';
-    const bridgePath = path.join(__dirname, 'weasyprint_bridge_optimized.py');
-    
-    const pythonProcess = spawn(pythonPath, [bridgePath], {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, PYTHONUNBUFFERED: '1' }
-    });
-    
-    // Mark as ready after a short delay (WeasyPrint startup)
-    setTimeout(() => {
-        processReady = true;
-        console.log('WeasyPrint process ready');
-    }, 2000);
-    
-    pythonProcess.on('error', (error) => {
-        console.error('Python process error:', error);
-        cachedProcess = null;
-        processReady = false;
-    });
-    
-    pythonProcess.on('exit', (code) => {
-        console.log('Python process exited with code:', code);
-        cachedProcess = null;
-        processReady = false;
-    });
-    
-    return pythonProcess;
-}
-
-/**
- * Get or create Python process
- */
-function getProcess() {
-    if (!cachedProcess || cachedProcess.killed) {
-        console.log('Creating new WeasyPrint process...');
-        cachedProcess = createPythonProcess();
-        processReady = false;
-    }
-    return cachedProcess;
-}
-
-/**
- * Generate PDF using the cached process
- */
-async function generatePDF(data) {
-    const process = getProcess();
-    
-    // Wait for process to be ready
-    if (!processReady) {
-        console.log('Waiting for WeasyPrint to initialize...');
-        await new Promise(resolve => setTimeout(resolve, 3000));
-    }
-    
-    return new Promise((resolve, reject) => {
-        let pdfData = Buffer.alloc(0);
-        let errorData = '';
-        let requestSent = false;
-        
-        const timeout = setTimeout(() => {
-            reject(new Error('PDF generation timeout'));
-        }, 30000);
-        
-        // Handle output - PDF data comes on stdout
-        const onData = (chunk) => {
-            pdfData = Buffer.concat([pdfData, chunk]);
-            // Check if we have a complete PDF (starts with %PDF)
-            if (pdfData.length > 4 && pdfData.toString('ascii', 0, 4) === '%PDF') {
-                // We got PDF data, resolve immediately
-                clearTimeout(timeout);
-                process.stdout.removeListener('data', onData);
-                process.stderr.removeListener('data', onError);
-                resolve(pdfData);
-            }
-        };
-        
-        // Handle errors - error messages come on stderr
-        const onError = (chunk) => {
-            const text = chunk.toString();
-            if (text.includes('WeasyPrint bridge ready') && !requestSent) {
-                // Bridge is ready, send request
-                requestSent = true;
-                try {
-                    process.stdin.write(JSON.stringify(data) + '\n');
-                } catch (error) {
-                    clearTimeout(timeout);
-                    reject(error);
-                }
-            } else if (text.trim() && !text.includes('WeasyPrint bridge ready')) {
-                errorData += text;
-                // If we get an error, reject immediately
-                clearTimeout(timeout);
-                process.stdout.removeListener('data', onData);
-                process.stderr.removeListener('data', onError);
-                reject(new Error(`PDF generation failed: ${errorData}`));
-            }
-        };
-        
-        // Attach listeners
-        process.stdout.on('data', onData);
-        process.stderr.on('data', onError);
-        
-        // Send request if process is already ready
-        if (processReady && !requestSent) {
-            try {
-                requestSent = true;
-                process.stdin.write(JSON.stringify(data) + '\n');
-            } catch (error) {
-                clearTimeout(timeout);
-                reject(error);
-            }
-        }
-    });
-}
-
-/**
- * Fallback: create one-time process if cached process fails
- */
-async function generatePDFFallback(data) {
-    console.log('Using fallback one-time process...');
-    
-    const pythonPath = '/opt/weasyprint/bin/python';
-    const bridgePath = path.join(__dirname, 'weasyprint_bridge_optimized.py');
+    const bridgePath = path.join(__dirname, 'weasyprint_bridge_secure.py');
     
     return new Promise((resolve, reject) => {
         const pythonProcess = spawn(pythonPath, [bridgePath], {
@@ -144,46 +22,94 @@ async function generatePDFFallback(data) {
             env: { ...process.env, PYTHONUNBUFFERED: '1' }
         });
         
-        let pdfData = Buffer.alloc(0);
+        let jsonResponse = '';
         let errorData = '';
-        let bridgeReady = false;
+        let requestSent = false;
         
+        const timeout = setTimeout(() => {
+            if (!pythonProcess.killed) {
+                pythonProcess.kill();
+            }
+            reject(new Error(`Request ${requestId} timed out after 40 seconds`));
+        }, 40000);
+        
+        // Collect JSON response from stdout
         pythonProcess.stdout.on('data', (chunk) => {
-            pdfData = Buffer.concat([pdfData, chunk]);
+            jsonResponse += chunk.toString();
         });
         
         pythonProcess.stderr.on('data', (chunk) => {
             const text = chunk.toString();
-            if (text.includes('WeasyPrint bridge ready')) {
-                bridgeReady = true;
-                // Send request now that bridge is ready
+            
+            if (text.includes('WeasyPrint bridge ready') && !requestSent) {
+                requestSent = true;
+                
+                const requestData = {
+                    ...data,
+                    request_id: requestId
+                };
+                
                 try {
-                    pythonProcess.stdin.write(JSON.stringify(data) + '\n');
+                    pythonProcess.stdin.write(JSON.stringify(requestData) + '\n');
+                    pythonProcess.stdin.end();
                 } catch (error) {
-                    reject(error);
+                    clearTimeout(timeout);
+                    reject(new Error(`Failed to send request: ${error.message}`));
                 }
-            } else {
+            } else if (text.includes('ERROR:')) {
                 errorData += text;
             }
         });
         
         pythonProcess.on('close', (code) => {
-            if (code !== 0 || errorData) {
-                reject(new Error(`PDF generation failed: ${errorData || 'Unknown error'}`));
-            } else {
-                resolve(pdfData);
+            clearTimeout(timeout);
+            
+            if (code !== 0 && !jsonResponse) {
+                reject(new Error(`Process failed: ${errorData || 'Unknown error'}`));
+                return;
+            }
+            
+            try {
+                // Parse JSON response
+                const response = JSON.parse(jsonResponse.trim());
+                
+                // Verify request ID matches
+                if (response.request_id !== requestId) {
+                    reject(new Error(`Request ID mismatch: expected ${requestId}, got ${response.request_id}`));
+                    return;
+                }
+                
+                // Check if successful
+                if (!response.success) {
+                    reject(new Error(`PDF generation failed: ${response.error}`));
+                    return;
+                }
+                
+                // Decode base64 PDF data
+                if (!response.pdf_base64) {
+                    reject(new Error(`No PDF data in response`));
+                    return;
+                }
+                
+                const pdfBuffer = Buffer.from(response.pdf_base64, 'base64');
+                
+                // Validate PDF data
+                if (pdfBuffer.length === 0 || pdfBuffer.toString('ascii', 0, 4) !== '%PDF') {
+                    reject(new Error(`Invalid PDF data received`));
+                    return;
+                }
+                
+                resolve(pdfBuffer);
+                
+            } catch (error) {
+                reject(new Error(`Failed to parse JSON response: ${error.message}`));
             }
         });
         
-        pythonProcess.on('error', reject);
-        
-        // Timeout
-        setTimeout(() => {
-            if (!pythonProcess.killed) {
-                pythonProcess.kill();
-                reject(new Error('PDF generation timeout'));
-            }
-        }, 30000);
+        pythonProcess.on('error', (error) => {
+            clearTimeout(timeout);
+            reject(new Error(`Python process error: ${error.message}`));
+        });
     });
 }
 
@@ -198,30 +124,8 @@ module.exports = async function(data) {
     }
     
     try {
-        // Try cached process first (for speed)
-        return await generatePDF({ html, css, options });
+        return await generatePDFSecure({ html, css, options });
     } catch (error) {
-        console.warn('Cached process failed, using fallback:', error.message);
-        
-        try {
-            // Fallback to one-time process
-            return await generatePDFFallback({ html, css, options });
-        } catch (fallbackError) {
-            throw new Error(`PDF generation failed: ${fallbackError.message}`);
-        }
+        throw new Error(`PDF generation failed: ${error.message}`);
     }
-};
-
-// Cleanup on exit
-process.on('exit', () => {
-    if (cachedProcess && !cachedProcess.killed) {
-        cachedProcess.kill();
-    }
-});
-
-process.on('SIGTERM', () => {
-    if (cachedProcess && !cachedProcess.killed) {
-        cachedProcess.kill();
-    }
-    process.exit(0);
-}); 
+}; 

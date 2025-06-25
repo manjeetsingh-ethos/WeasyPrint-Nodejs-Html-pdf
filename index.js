@@ -9,8 +9,8 @@ const PORT = process.env.PORT || 3000;
 
 // Production configuration
 const POOL_MIN_THREADS = parseInt(process.env.POOL_MIN_THREADS) || 2;
-const POOL_MAX_THREADS = parseInt(process.env.POOL_MAX_THREADS) || 4;
-const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 30000; // 30 seconds
+const POOL_MAX_THREADS = parseInt(process.env.POOL_MAX_THREADS) || 6;
+const REQUEST_TIMEOUT = parseInt(process.env.REQUEST_TIMEOUT) || 45000; // 45 seconds
 
 // Production logging
 const log = {
@@ -27,9 +27,10 @@ try {
         filename: path.resolve(__dirname, 'pdf_worker.js'),
         minThreads: POOL_MIN_THREADS,
         maxThreads: POOL_MAX_THREADS,
-        idleTimeout: 60000, // Keep workers alive for 1 minute
-        maxQueue: 'auto', // Auto-calculate queue size
-        recordTiming: true // Track performance metrics
+        idleTimeout: 120000, // Keep workers alive for 2 minutes
+        maxQueue: 100, // Explicit queue limit instead of 'auto' to handle more requests
+        recordTiming: true, // Track performance metrics
+        concurrentTasksPerWorker: 1 // Ensure one task per worker for isolation
     });
     
     log.info(`PDF worker pool initialized: ${POOL_MIN_THREADS}-${POOL_MAX_THREADS} threads`);
