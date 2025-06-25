@@ -37,7 +37,7 @@ COPY --from=builder /usr/src/app/node_modules /app/node_modules
 
 # Set working directory and copy application files
 WORKDIR /app
-COPY --chown=appuser:appuser index.js template.html weasyprint_bridge.py weasyprint_bridge_optimized.py pdf_worker.js ./
+COPY --chown=appuser:appuser index.js template.html simple_template.html weasyprint_bridge_optimized.py pdf_worker.js ./
 
 # Update font cache and cleanup
 RUN fc-cache -fv && \

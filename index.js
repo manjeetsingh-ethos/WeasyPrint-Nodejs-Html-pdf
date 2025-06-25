@@ -89,23 +89,23 @@ app.get('/pdf', async (req, res) => {
     const startTime = Date.now();
     
     try {
-        // Get HTML from query parameter or use template
-        let htmlContent;
+        // Get template name from query parameter
+        const templateName = req.query.template || 'template'; // Default to 'template'
+        const templatePath = path.join(__dirname, `${templateName}.html`);
         
-        if (req.query.html) {
-            htmlContent = decodeURIComponent(req.query.html);
-        } else {
-            // Fallback to template
-            const templatePath = path.join(__dirname, 'template.html');
-            if (!fs.existsSync(templatePath)) {
-                log.error('Template file not found:', templatePath);
-                return res.status(500).json({
-                    error: 'Server configuration error',
-                    message: 'PDF template not available and no HTML provided'
-                });
-            }
-            htmlContent = fs.readFileSync(templatePath, 'utf8');
+        // Check if template exists
+        if (!fs.existsSync(templatePath)) {
+            log.error('Template file not found:', templatePath);
+            return res.status(400).json({
+                error: 'Template not found',
+                message: `Template '${templateName}.html' does not exist`,
+                availableTemplates: ['template', 'simple_template']
+            });
         }
+        
+        // Read template content
+        const htmlContent = fs.readFileSync(templatePath, 'utf8');
+        log.info(`Using template: ${templateName}.html (${htmlContent.length} chars)`);
         
         // Generate PDF using worker pool
         log.info('Generating PDF...');
@@ -119,7 +119,7 @@ app.get('/pdf', async (req, res) => {
         const pdfBuffer = Buffer.isBuffer(pdfResult) ? pdfResult : Buffer.from(Object.values(pdfResult));
 
         const processingTime = Date.now() - startTime;
-        log.info(`PDF generated successfully in ${processingTime}ms, size: ${pdfBuffer.length} bytes`);
+        log.info(`PDF generated successfully in ${processingTime}ms, size: ${pdfBuffer.length} bytes, template: ${templateName}`);
 
         // Set response headers
         res.setHeader('Content-Type', 'application/pdf');
@@ -165,7 +165,7 @@ app.use('*', (req, res) => {
         message: `Route ${req.method} ${req.originalUrl} not found`,
         availableRoutes: [
             'GET /health - Health check',
-            'GET /pdf - Generate PDF from template'
+            'GET /pdf?template=<name> - Generate PDF from template (default: template)'
         ]
     });
 });
