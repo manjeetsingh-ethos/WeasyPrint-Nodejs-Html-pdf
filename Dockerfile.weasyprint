@@ -1,0 +1,55 @@
+# Multi-stage build for optimal size
+# Build stage - install everything needed to build WeasyPrint
+FROM node:22-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache \
+    python3 py3-pip \
+    cairo-dev pango-dev gdk-pixbuf-dev \
+    libffi-dev libxml2-dev libxslt-dev \
+    gcc musl-dev
+
+# Create virtual environment and install WeasyPrint
+RUN python3 -m venv /opt/weasyprint && \
+    /opt/weasyprint/bin/pip install --no-cache-dir WeasyPrint
+
+# Install Node.js dependencies
+WORKDIR /usr/src/app
+COPY package*.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+
+# Runtime stage - minimal dependencies for running
+FROM node:22-alpine AS runtime
+
+# Install only runtime dependencies (no build tools)
+RUN apk add --no-cache \
+    python3 \
+    cairo pango gdk-pixbuf \
+    libffi libxml2 libxslt \
+    fontconfig ttf-dejavu ttf-liberation ttf-opensans && \
+    adduser -D -s /bin/sh appuser
+
+# Copy the virtual environment with WeasyPrint
+COPY --from=builder /opt/weasyprint /opt/weasyprint
+
+# Copy Node.js dependencies (production only)
+COPY --from=builder /usr/src/app/node_modules /app/node_modules
+
+# Set working directory and copy application files
+WORKDIR /app
+COPY --chown=appuser:appuser index.js template.html weasyprint_bridge.py weasyprint_bridge_optimized.py pdf_worker.js ./
+
+# Update font cache and cleanup
+RUN fc-cache -fv && \
+    rm -rf /tmp/* /var/cache/apk/* /root/.cache && \
+    chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 3000
+
+# Start the application
+CMD ["node", "index.js"]
+
