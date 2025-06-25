@@ -11,6 +11,8 @@ A high-performance, production-ready Node.js service that converts HTML template
 - **Docker Alpine** - Multi-stage containerization for optimized deployment
 - **Fault Tolerance**: Auto-recovering workers with queue management
 
+
+
 ## 🎯 Executive Summary
 
 **✅ PRODUCTION READY** - Handles **up to 20 requests per second** with excellent performance metrics.
@@ -51,6 +53,9 @@ A high-performance, production-ready Node.js service that converts HTML template
 docker build -f Dockerfile.weasyprint -t pdf-service .
 docker run -p 3000:3000 pdf-service
 
+```
+
+---
 
 ## 📊 Load Test Results
 
@@ -108,10 +113,7 @@ Express Server → Piscina Pool → Worker Threads → WeasyPrint Bridge → PDF
 4. **Buffer Streaming**: Direct memory transfer, no disk I/O
 5. **Response**: Optimized headers with processing time metrics
 
-
 ---
-
-
 
 **Recommended Production Load:** 20 req/sec
 - Achieves 19.9 req/sec actual throughput
